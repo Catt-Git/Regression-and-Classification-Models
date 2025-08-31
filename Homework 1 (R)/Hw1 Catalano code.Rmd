@@ -1,0 +1,260 @@
+---
+title: "Statistics for Data Science - Homework #1"
+date: "02/04/2025"
+author: "Alberto Catalano - 257816"
+geometry: "left=2cm,right=2cm,top=1cm,bottom=1.5cm"
+output:
+    pdf_document:
+        latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE,
+message=FALSE,
+tidy.opts=list(width.cutoff = 80),
+tidy = TRUE)
+```
+
+\hrule
+
+## Introduction
+
+This work analyzes a dataset containing 4238 observations from a cardiovascular study conducted in the United States, investigating potential risk factors associated with the 10-year incidence of **coronary heart disease** (CHD). The dataset includes variables such as: sex, age, education level, smoking status, daily smoked cigarette, previous occurences of strokes or hypertension, presence of diabetes, cholesterol levels, diastolic blood pressure, body mass index and heart rate.\
+The **objective** of this work is to identify statistically significant predictors of CHD risk development. To achieve this,**generalized linear models** (logistic regression) and **k-nearest neighbors** (KNN) were employed
+
+```{r, include = FALSE}
+#library loading
+library(tidyverse)
+library(tidymodels)
+library(ISLR2)
+library(class) #knn
+library(caret) #split 
+library(ggplot2)
+```
+
+## Methods
+
+Before proceeding with the analysis, this section provides a brief introduction the two models used to assess the relationships between risk factors and CHD incidence:
+
+• GLM (logistic regression), this model assumes a linear relationships between the predictors and the log-odds of the outcome.\
+• KNN, a non-parametric method that classifies each observation based on the majority class of its nearest neighbors in the feature space.
+
+## Data Exploration
+
+As an initial step, the dataset is loaded and a copy is created to preserve the original data. The summary of the observations is then examinated.
+
+```{r}
+dataset <- read.csv("chd.csv") #safety copy 
+dataf <- dataset 
+summary(dataf)
+```
+
+From an initial examination of the dataset, two potential issues were identified:
+
+1.  Several variables were incorrectly categorized as integers (*e.g. smoker*) or character strings (*e.g. CHD*), despite better fitting categorical data formats. To fix this, all those variables were converted into **factors**.
+2.  The summary revealed the presence of **missing values** (NAs), particularly in the variables related to education, cholesterol, cigarettes per day and BMI. Since most of these variables are binary, substituting missing values with the mean was not a viable option. Although this decision could be considered controversial, all the observations containing NAs were **removed**. As a result, the dataset was reduced to 4039 observation, corresponding to a 4% data loss. Below is the summary of the dataset after addressing these two issues.
+
+```{r, include=FALSE}
+as.tibble(dataf)
+dataf$sex <- factor(dataf$sex)
+dataf$education <- factor(dataf$education)
+dataf$smoker <- factor(dataf$smoker)
+dataf$stroke <- factor(dataf$stroke)
+dataf$HTN <- factor(dataf$HTN)
+dataf$diabetes <- factor(dataf$diabetes)
+dataf$CHD <- factor(dataf$CHD)
+attach(dataf)
+```
+
+```{r}
+dataf <- na.omit(dataf)
+summary(dataf) 
+```
+
+We observe that the response variable CHD is a **binary categorical variable**, taking only two possible values: "Yes" or "No". To better understand its distribution, a **bar chart** is provided. It's possible to see that the majority of the individuals did not develop CHD.
+
+```{r, fig.width=5, fig.height=3, fig.align="center"}
+ggplot(dataf, aes(x = CHD, fill = CHD)) + geom_bar() + labs(title = "Distribution of CHD",
+x = "CHD group", y = "Value") + scale_fill_manual(values = c("#1A85FF", "#D41159")) +
+theme_minimal() + theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r, include = FALSE}
+table(dataf$CHD) 
+prop.table(table(dataf$CHD))
+#tables showing the number and proportion in the CHD variable
+```
+
+To conclude the preliminary analysis, a visualization of each predictor, to investigate their discriminative power, is made using:\
+• boxplots for **continuous predictors**\
+• bar plots for **discrete predictors**
+
+```{r,fig.align="center", fig.width=8, fig.height=5}
+cont_pred <- dataf %>%
+  pivot_longer(cols = c(age, cpd, chol, DBP, BMI, HR), 
+               names_to = "Variable", 
+               values_to = "Value") %>%
+  mutate(CHD = factor(CHD))  
+ggplot(cont_pred, aes(x = CHD, y = Value, fill = CHD)) +
+  geom_boxplot() +
+  facet_wrap(~ Variable, scales = "free_y", ncol = 3) + 
+  theme_minimal() + 
+  scale_fill_manual(values = c("#1A85FF", "#D41159")) + 
+  labs(title = "Distribution of Continuous Predictors", y = "Value", x = "CHD") +
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+
+cat_pred <- c("sex", "education", "smoker", "diabetes", "HTN", "stroke")
+response <- "CHD"
+colors <- c("#D41159", "#1A85FF")
+plotting_barplot <- function(predictor, data, response) {
+  freq_table <- table(data[[predictor]], data[[response]])
+  freq_table <- freq_table[, rev(colnames(freq_table))]  
+  prob_table <- prop.table(freq_table, margin = 1)  
+  barplot(
+    t(prob_table),
+    beside = FALSE,
+    main = paste("Distribution of Categorical Predictors"),
+    xlab = predictor,
+    ylab = "Proportion",
+    col = colors
+  )
+}
+par(mfrow = c(2, 3))
+invisible(lapply(cat_pred, plotting_barplot, data = dataf, response = response))
+```
+```{r, include = F}
+#not working ggplot code
+cat_pred <- dataf %>%
+  pivot_longer(cols = c(sex, education, smoker, diabetes, HTN, stroke), names_to = "Variable", values_to = "Value") %>%
+  mutate(CHD = factor(CHD, levels = c(0, 1), labels = c("No", "Yes"))) 
+ggplot(cat_pred, aes(x = Value, fill = CHD)) +
+  geom_bar(position = "fill", color = "black", width = 0.7) +  
+  facet_wrap(~ Variable, scales = "free_x", ncol = 3) +  
+  scale_fill_manual(values = c("Yes" = "#D41159", "No" = "#1A85FF")) + 
+  labs(title = "Distribution of Categorical Predictors",
+       x = "Category",
+       y = "Proportion",
+       fill = "CHD Status") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))  
+
+
+```
+
+
+## Splitting into training and test
+
+To ensure reproducibility, the random seed was first set. The dataset was then divided into training and test sets to build the models. Given the imbalance in CHD, a 70/30 split was selected to maintain sufficient representation of both classes in the training set.  
+The probability tables demonstrate that the distribution of CHD is preserved in both the training and test datasets.
+
+```{r, results = "hold"}
+set.seed(123) #reproducibility
+test <- createDataPartition(dataf$CHD, p = 0.7, list = FALSE) 
+
+tr_dataf <- dataf[-test, ]
+ts_dataf<- dataf[test, ]
+
+CHD_test <- ts_dataf$CHD
+CHD_test <- as.character(CHD_test)
+
+prop.table(table(tr_dataf$CHD)) #Training set distribution
+prop.table(table(ts_dataf$CHD)) #Test set distribution
+```
+
+## Logistic regression
+
+Now it's possible to fit the logistic regression using all available parameters. The *summary(lreg)* function provides several useful pieces of information. First, it displays the estimated coefficiennts for each predictor in the mode, also with their respective significance levels. Parameters with a p-value \< 0.05 are considered statistically significant (marked with \*). The other parameters which have p-values greater than 0.05 are not statistically significant and have a weaker impact on predicting CHD risk.  The **Null deviance** represents the goodness of fit of a model that includes only the intercept, serving as a baseline.  The **residual deviance**, which is slightly lower, suggests that including all predictor variables improves the model's fit and is important for the model's quality.  **AIC** (Akaike Information Criterion) is another criterion used for model comparison, with lower AIC values indicating a better-fitting model.
+
+```{r}
+lreg <- glm(CHD~ sex + age + education + smoker + cpd + HTN + diabetes + chol + DBP + BMI + HR, data = tr_dataf, 
+               family = binomial)
+summary(lreg)
+```
+
+Next the predicted probability of CHD for each individual in the test set is computed, as estimated by the logistic regression model. The first 10 predicted probabilities are shown below. These probabilities represent the likelihood that each individual in the test set belongs to the "Yes" category (having CHD).
+
+```{r}
+lreg_probs <- predict(lreg, data = ts_dataf, type = "response")
+lreg_probs[1:10]
+contrasts(CHD)
+```
+
+Before proceeding, the performance of the logistic regression model is assessed by comparing its predictions to the actual outcomes in the test set. The confusion matrix below shows the number of instances that were correctly or incorrectly predicted. Additionally, the accuracy and error rate of the model are provided.
+
+```{r}
+lreg_pred <- rep("No", nrow(ts_dataf)) # placeholder with all "No"
+lreg_pred[lreg_probs > 0.5] <- "Yes" # replace with "Yes" if probability is > 0.5 (threshold)
+
+table(lreg_pred, CHD_test) #confusion matrix
+
+mean(lreg_pred == CHD_test) # accuracy
+mean(lreg_pred != CHD_test) #error rate
+```
+
+## KNN
+
+In this step, a k-nearest neighbors classification model is trained and evaluated using only the continuous predictor variables. The parameter k, which represents the number of nearest neighbors considered in the classification, is set to 7. A detailed explanation on how this value was chosen will follow in the next section. As with the logistic regression model, the performance of the knn model is presented using a confusion matrix, accuracy and error rate values.
+
+```{r}
+set.seed(123)
+train_X <- tr_dataf %>% select(age, cpd, chol, DBP, BMI, HR)
+test_X <- ts_dataf %>% select(age, cpd, chol, DBP, BMI, HR)
+train_CHD <- tr_dataf$CHD #will be the true target for the training set
+test_CHD <- ts_dataf$CHD
+
+knn_pred <- knn(train_X, test_X, train_CHD, k=7, prob=T)
+knn_probs <- attr(knn_pred, "prob")
+knn_probs <- ifelse(knn_pred == "Yes", knn_probs, 1 - knn_probs)  # Convert to match CHD = 1
+
+table(knn_pred, test_CHD) # confusion matrix
+mean(knn_pred == test_CHD) # accuracy
+mean(knn_pred!=  CHD_test) # error rate
+```
+The parameter K was selected using an **elbow plot**. The method involves plotting the model's error rate against different values of k and identifyng the point where the error rate stops decreasing significantly, forming an "elbow". This point represents the optimal value of K, as increasing K further brings minimal improvement. Additionally an odd number was chosen to prevent ties, since the classification problem involves only two classes. Using an odd value helps avoiding ties when the neighbors are evenly split between the two classes.
+
+```{r, fig.align="center", tidy=TRUE}
+error_rate <- numeric()
+for (i in 1:25){
+ knn_pred <- knn(train_X, test_X, train_CHD, k=i)
+ error_rate <- c(error_rate, mean(knn_pred != test_CHD))
+}
+
+error_df <- data.frame(k = 1:25, error_rate = error_rate)
+
+ggplot(error_df, aes(x = k, y = error_rate)) +  
+  geom_line(color = "#1A85FF") +   
+  geom_point(color = "#D41159") +   
+  labs(title = "Elbow plot",
+       x = "Number of k",
+       y = "Error Rate") + theme(plot.title = element_text(hjust = 0.5)) 
+ 
+```
+
+## Conclusion
+
+To draw some conclusions, first thing to do is comparing the accuracy of the two models.
+
+```{r}
+mean(lreg_pred == CHD_test) #logistic regression
+mean(knn_pred == test_CHD) #knn
+```
+
+In this analysis, the knn model slightly outperforms the logistic regression model. However, the difference in performance is marginal, indicating that the two models are quite comparable. Therefore, it would not be appropriate to assert that one method is definitively more suitable than the other for predicting the risk of developing CHD.
+
+An additional point of concern is the significance of the predictor variables in the logistic regression model. It is surprising that a variable like education holds more significance in predicting CHD risk compared to other more clinically relevant variables, such as smoking status, BMI, heart rate, and diastolic blood pressure (all of which are well-documented risk factors for CHD in the existing literature).
+
+Last important aspect is the distribution of variables such as diabetes, HTN, and stroke. The barplots suggest a stronger correlation with CHD; however, this intuition is not supported by statistical significance in the logistic regression.The same pattern is observed in discrete variables such as age and DBP.
+
+*Note: The following libraries were used in this analysis. With these libraries and the dataset file, the analysis can be fully reproduced.*
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(ISLR2)
+library(class) #knn
+library(caret)
+library(ggplot2)
+```
+
+
