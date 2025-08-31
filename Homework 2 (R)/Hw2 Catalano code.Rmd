@@ -1,0 +1,289 @@
+---
+title: 'Statistical Learning, Homework #2'
+date: '27/04/2025'
+author: "Alberto Catalano - 257816"
+geometry: "left=2cm,right=2cm,top=1cm,bottom=1.5cm"
+output:
+    pdf_document:
+        latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE,
+message=FALSE,
+tidy.opts=list(width.cutoff = 80),
+tidy = TRUE)
+```
+
+\hrule
+
+## Introduction
+
+In this study, a dataset including 442 observations related to **diabetes research** was analyzed. The primary **objective** was to explore associations between disease progression after one year and various clinical predictors. These included age, sex, body mass index (BMI), average blood pressure (BP), triglyceride levels (TG), glycemia levels (GC), and total cholesterol (TC), which was further broken down into low-density lipoproteins (LDL), high-density lipoproteins (HDL), and the ratio of total cholesterol to HDL (TCH). To identify statistically significant predictors of diabetes progression, three tree-based modeling approaches were employed: **decision trees**, **random forests**, and **boosted regression trees**.
+
+These are the R libraries required for this analysis:
+
+```{r}
+library(tidyverse) #ggplot2 and more
+library(tree) #for fecision trees
+library(randomForest)
+library(gbm) #tree boosting
+library(caret) 
+library(conflicted) #priority for functions with the same name
+conflicts_prefer(dplyr::select())
+```
+
+## Methods
+
+Before proceeding with the analysis, this section provides a concise overview of the statistical methods employed in this study to evaluate and model the progression of diabetes:
+
+• **Cross-validation (CV)**: K-fold cross-validation is employed as the core evaluation strategy. Through this technique, the data is repeatedly partitioned into training and testing sets, to estimate the model generalization performance. CV is also utilized for the selection of optimal tuning parameters (*tree complexity, mtry, n.trees*) to mitigate overfitting.
+
+• **Decision Tree**: This non-parametric supervised learning method is used for regression to predict the diabetes progression outcome. The dataset is recursively partitioned based on predictor variable values, creating a tree-like structure.
+
+• **Tree pruning**: Applied to the initial decision tree, this technique involves the removal of specific branches identified by CV as having limited predictive value on hold-out data. The tree model is simplified; in this way overfitting to the training data is reduced, and generalizability is often improved.
+
+• **Random Forest**: In this ensemble learning method, a multitude of decision trees is constructed. Randomness is introduced in two ways: each tree is built using a different bootstrap samples of the original data (bagging), and only a random subset of features is considered at each potential split. The final prediction is derived by averaging the predictions from all individual trees, typically resulting in enhanced accuracy and stability compared to a single tree.
+
+• **Boosted regression tree (Tree boosting)**: By this ensemble technique, decision trees are built sequentially. Each new tree is specifically trained to focus on correcting the residual errors remaining from the previously constructed trees. Through this iterative refinement process, highly accurate predictive models are often yielded. The optimal number of trees to include is determined using CV.
+
+## Data Exploration
+
+To begin the analysis, the dataset was loaded and duplicated to preserve the original. The summary confirmed correct data types, except for "*sex*" which was factorized. The summary also showed the **absence ** of missing values.
+
+```{r}
+dataf <- read.csv("db.txt", sep = "\t", header = TRUE)
+dataset <- dataf #copy
+dataf$sex <- factor(dataf$sex)
+levels(dataf$sex) <- c("Male","Female")
+attach(dataf)
+as.tibble(dataf)
+```
+
+Before the implementation of the decision tree model, an **exploratory scatterplot analysis** was conducted to visualize the relationship between each predictor and diabetes progession, devided by sex. A linear regression line was included in each panel to highlight trends. From this preliminary analysis, some patterns emerged:
+
+• BMI, glycemia (GC), triglycerides (TG) and total cholesterol ratio (TCH) exhibited strong positive associations with diabetes progression
+
+• HDL showed a strong negative correlation, suggesting a protective effect
+
+• Sex-specific differences in trends were observed for certain predictors
+
+```{r, echo = FALSE, fig.width=5, fig.height=3, fig.align="center"}
+pred_eff <- dataf %>%
+  pivot_longer(cols = c(age, BMI, BP, TC, LDL, HDL, TCH, TG, GC),
+               names_to = "predictor", values_to = "value")
+
+ggplot(pred_eff, aes(x = value, y = progr, color = sex)) +
+  geom_point(alpha = 0.5, size = 0.5) +#smaller dots to improve interpretability    
+  geom_smooth(method = "lm", se = FALSE) +  #adds linear regression line
+  facet_wrap(~ predictor, scales = "free_x") +  
+  scale_color_manual(values = c("Male" = "#0B579A", "Female" = "#FF5DCD")) + 
+  labs(
+    title = "Effect of each clinical parameter on diabetes progression ",
+    x = "Predictor value",
+    y = "Diabetes progression (progr)",
+    color = "Sex"
+  ) +
+  theme_minimal()  
+```
+
+## Decision Tree
+
+The regression decision tree is first fitted to the **whole dataset**, resulting in an initial tree composed of 12 terminal nodes. The summary statistics also indicate a residual mean deviance of 2674.
+
+```{r}
+diab_tree <- tree(progr ~ . , data = dataf) #fit the tree on the whole data
+plot(diab_tree)
+text(diab_tree, pretty = 0, cex = 0.7 ) #smaller text
+title("Full data decision tree")
+summary(diab_tree)
+```
+
+Subsequently, cross-validation of the tree was performed to decide tree complexity. The plot provided below indicates that the optimal number of terminal leaves is 9 (lowest deviance).
+
+```{r}
+set.seed(123) #for reproducibility
+cv_diab_tree <- cv.tree(diab_tree)  #cv
+```
+```{r, echo=FALSE, fig.width=5, fig.height=3, fig.align="center"}
+cv_ggplot <- data.frame(size=cv_diab_tree$size, dev = cv_diab_tree$dev)
+ggplot(cv_ggplot, aes(x = size, y = dev)) +
+  geom_line(color = "#1E88E5", linewidth = 1) +
+  geom_point( size = 3) +
+  geom_point(data = subset(cv_ggplot, dev == min(dev)), aes(x = size, y = dev), 
+             color = "red", size = 3) +
+  scale_x_continuous(breaks=1:12, limits = c(1,12)) +
+  labs(
+    title = "Cross-validation for decision tree complexity",
+    x = "Tree Size (n° of terminal nodes)",
+    y = "Deviance (Cross-validated error)"
+  ) +
+  theme_minimal()
+```
+
+Based on the cross-validation results, the tree was **pruned**. Examination of the summary statistics reveals that the residual mean deviance increased to 2864, exceeding the value obtained with the unpruned tree. This increase occurs because the pruned tree possesses a simpler structure, which results in a slightly less precise fit to the training data compared to the potentially overfit, larger, unpruned tree.
+
+Based on the pruned decision tree, Triglycerides (TG) were identified as the primary splitting variable for predicting diabetes progression. Body Mass Index (BMI) served as the key secondary separator. Further stratification within branches was achieved using Glucose (GC) and Blood Pressure (BP) at specific BMI thresholds.
+
+```{r, fig.width=6, fig.height=4, fig.align="center"}
+optimal_size_diab_tree <- cv_diab_tree$size[which.min(cv_diab_tree$dev)] #9
+pruned_diab_tree <- prune.tree(diab_tree, best = optimal_size_diab_tree)
+
+plot(pruned_diab_tree)
+text(pruned_diab_tree, pretty= 0, cex = 0.7)
+title("Pruned decision tree")
+summary(pruned_diab_tree)
+```
+
+## Random forest
+
+Following the pruned tree, a random forest model was fitted to the dataset, as previously introduced. The **mtry parameter**, which represents the number of variables randomly sampled as candidates at each split, required tuning. This tuning was performed using cross-validation, evaluating the **Out-of-Bag (OOB) error** for different mtry values. The plot below illustrates the relationship between mtry and the corresponding OOB error. The same number can also be obtained by the standard formula: *mtry = n° predictors / 3*.
+
+```{r}
+set.seed(123)
+n_pred <- ncol(dataf) -1
+mtry_vals <- 1:n_pred #mtry tuning
+oob_errors <- numeric(length(mtry_vals))
+
+for (i in mtry_vals) { #forest creation
+  diab_rf_temp <- randomForest(progr ~., data = dataf, mtry = i, ntree = 250, importance = FALSE)
+  oob_errors[i] <- diab_rf_temp$mse[diab_rf_temp$ntree]
+}
+
+best_mtry <- which.min(oob_errors) #3
+```
+
+```{r, echo = FALSE, fig.width=6, fig.height=4, fig.align="center"}
+#plot
+rf_oob_ggplot <- data.frame(mtry = mtry_vals, oob_error = oob_errors)
+ggplot(rf_oob_ggplot, aes(x = mtry, y = oob_error)) +
+  geom_line(color = "#1E88E5", linewidth = 1) +
+  geom_point(size = 3) +
+  geom_point(data = subset(rf_oob_ggplot, oob_error == min(oob_error)), 
+             aes(x = mtry, y = oob_error), 
+             color = "red", size = 3) +
+  scale_x_continuous(breaks = mtry_vals) +
+  labs(
+    title = "OOB error vs. mtry for random rorest",
+    x = "Number of variables considered at each split (mtry)",
+    y = "OOB mean squared error"
+  ) +
+  theme_minimal()
+```
+
+Based on the results shown in the plot, the final random forest model was fitted utilizing this optimal mtry value. For this final model, the number of trees was set to 500, a value frequently employed in practice for robust model generation.
+The percentage of data variance explained by the model is 45.88%.
+
+```{r}
+set.seed(123)
+diab_random_forest <- randomForest(progr~., data=dataf, mtry=best_mtry, ntree = 500, importance = TRUE) 
+diab_random_forest #summary of final rf model
+```
+
+Following the generation of the final random forest model, variable importance was assessed. Although several methods exist for representing it, an **ordered table** format based on the percentage increase in Mean Squared Error (%IncMSE) was chosen for presentation. According to this metric, the largest increases in MSE are associated with the variables TG and BMI, indicating their high predictive importance (both exhibiting %IncMSE values exceeding 30).
+
+```{r}
+importance_rf <- importance(diab_random_forest)
+knitr::kable(importance_rf[order(importance_rf[, "%IncMSE"], decreasing = TRUE), ])
+
+#varImpPlot(diab_random_forest, main = "Variable Importance (Random Forest)"
+```
+
+## Boosted regression tree
+
+The final model implemented was a **boosted regression tree**. Firstly, cross validation was used to tune key parameters such as the number of trees, interaction depth and shrinkage, for each parameter values with lowest RMSE were selected.
+
+```{r, fig.width=5, fig.height=3, fig.align="center"}
+set.seed(123)
+boosted_control <- trainControl(method = "cv", number = 10)
+boosted_par_tuning <- expand.grid(
+  n.trees = c(1000,2000,3000,4000,5000), #5000
+  interaction.depth = c(1,3,5), #1
+  shrinkage = c(0.01,0.05,0.1), #0.01
+  n.minobsinnode = 10)
+
+diab_gbm_tuned <- train(
+  progr ~ .,  data = dataf, method = "gbm", distribution = "gaussian", 
+  trControl = boosted_control, 
+  tuneGrid = boosted_par_tuning, verbose = F)
+
+plot(diab_gbm_tuned)
+```
+
+The provided partial dependence plot illustrates the estimated effect of BMI on predicted diabetes progression, holding all other variables constant. Generally, diabetes progression tends to **increase** with higher BMI. The progression shows a sharp rise around a BMI of 33, before reaching a plateau at higher BMI.
+
+```{r, fig.width=5, fig.height=3, fig.align="center"}
+set.seed(123)
+diab_gbm <- gbm(progr~., data=dataf, distribution = "gaussian", n.trees = 5000, interaction.depth = 1, shrinkage = 0.01, cv.folds = 10, verbose = FALSE)
+
+plot(diab_gbm, i="BMI", ylab= "Diabetes progression", main="Progression of diabetes vs BMI") 
+```
+This plot displays the training error and 10-fold cross-validation error against the number of boosting iterations for the model. While training error decreases continually, the CV error reaches a minimum at approximately **1253 iterations** (dashed line), indicating the optimal number of trees before overfitting begins.
+
+```{r}
+set.seed(123)
+best_treenum_cv <- gbm.perf(diab_gbm, method="cv", plot.it = FALSE) #1253
+best_treenum_cv
+```
+```{r, echo = F, fig.width=5, fig.height=3, fig.align="center"}
+cv_plot <- diab_gbm$cv.error
+plot(cv_plot, type = "l", col="green", xlab = "Iteration", ylab = "Squared error loss", ylim=c(0,6000), main = "Boosted regression performance")
+lines(diab_gbm$train.error, col="black")
+abline(v = best_treenum_cv, col="blue", lty= 3)
+legend("topright",
+       legend = c("10-fold cv error", "Training error", "best iterationn"),
+                  col = c("green","black","blue"),lty = c(1,1,2), bty="n")
+```
+
+Following the determination of the optimal number of trees, variable influence was examined. The summary indicates that TG and BMI are again identified as the most influential predictors.
+
+```{r, fig.width=6, fig.height=4, fig.align="center" }
+summary(diab_gbm, n.trees=best_treenum_cv, main="Boosted tree variable influence", las=1)
+```
+
+## Performance of the three models
+
+Model performance was compared using a 10-fold nested cross-validation approach. The outer 10 folds were utilized for evaluating the final predictive performance. Within each outer training fold, model complexity wes re-optimized independently: internal cross-validation was employed for decision trees and boosting models, while the Out-of-Bag error was used for random forests. This nested methodology ensures an unbiased performance assessment by preventing the outer test data from influencing complexity selection.
+
+```{r}
+set.seed(123)
+ctrl <- trainControl(method = "cv", number = 10) #10-fold cv
+
+ctrl_diab_pruned_tree <- train(progr ~., data=dataf, method = "rpart", trControl = ctrl, tuneLength = 10)
+ctrl_diab_random_forest <- train(progr~., data=dataf, method = "rf", trControl = ctrl, tuneLength = 5, importance = T)
+ctrl_diab_boosted <- train(progr ~., data=dataf, method = "gbm", trControl = ctrl, verbose = FALSE, tuneLength = 5)
+
+results <- resamples(list(
+  Tree = ctrl_diab_pruned_tree,
+  RF = ctrl_diab_random_forest,
+  Boosted = ctrl_diab_boosted
+))
+summary(results)
+```
+It can be observed from the plot that the boosted model generally exhibit lower error metrics (MAE, RMSE) and higher R-squared values compared to the pruned tree and random forest models.
+
+```{r, echo=F, fig.width=5, fig.height=3, fig.align="center"}
+model_means <- data.frame(
+  Model = rep(c("Tree", "RF", "Boosted"), times = 3),
+  Metric = rep(c("MAE", "RMSE", "Rsquared"), each = 3),
+  MeanValue = c(49.48875, 46.96492, 44.30927,
+    61.79852, 56.80963, 54.68502,
+    0.3708766*100, 0.4717574*100, 0.5043640*100))
+
+ggplot(model_means, aes(x = Metric, y = MeanValue, fill = Model)) +
+  geom_col(position = "dodge") + 
+    scale_fill_manual(values = c("Tree" = "#D81B60", "RF" = "#1E88E5", "Boosted"="#FFC107")) +
+  labs(title = "Model Performance by Metric",
+       y = "Mean value",
+       x = NULL) +   # <- no x-axis label
+  theme_minimal()
+```
+
+## Conclusions
+
+In this analysis, three tree-based regression methods: pruned decision trees, random forests, and boosted trees were employed to predict diabetes progression based on clinical data. A 10-fold cross-validation procedure was utilized for evaluation and incorporating parameter re-optimization within each training fold to facilitate unbiased performance comparisons.
+
+While the pruned decision tree provided a simple and interpretable structure, its predictive accuracy was lower compared to the ensemble methods. Random forests improved performance by leveraging bootstrap aggregation and feature randomness, while **boosted trees achieved superior overall predictive performance** according to the evaluation metrics. Boosting’ sequential learning and residual correction mechanism enabled the capture of complex, non-linear relationships within the data, resulting in the lowest error metrics (MAE and RMSE) and the highest R-squared values among the models evaluated.
+
+Regarding variable importance, all models consistently identified **BMI** and **triglyceride levels (TG)** as the most influential predictors of diabetes progression. These were followed by blood pressure (BP) and glycemia (GC), indicating the importance of metabolic and cardiovascular indicators in disease development. Notably, HDL demonstrated a potentially protective association, aligning with clinical understanding of its role.
+Overall, while decision trees offer advantages in interpretability ensemble methods, particularly gradient boosting, provide superior predictive accuracy and potentially deeper insights into the factors driving disease progression.
